@@ -96,6 +96,10 @@ class ClonableModelAdmin(ModelAdmin):
             form = ModelForm(request.POST, request.FILES)
             if form.is_valid():
                 new_object = self.save_form(request, form, change=False)
+
+                # Save the model and its relations
+                self.save_model(request, new_object, form, change=False)
+                self.save_related(request, form, [], change=False)
                 form_validated = True
             else:
                 new_object = self.model()
@@ -109,7 +113,19 @@ class ClonableModelAdmin(ModelAdmin):
                     prefix = "%s-%s" % (prefix, prefixes[prefix])
 
                 request_files = request.FILES
-                filter_params = {'%s__pk' % original_obj.__class__.__name__.lower(): original_obj.pk}
+
+                formset_fk = getattr(FormSet, "fk", None)
+                if formset_fk:
+                    filter_params = {'%s__pk' % original_obj.__class__.__name__.lower(): original_obj.pk}
+                else:
+                    ct_fk_field = getattr(FormSet, "ct_fk_field", None)
+                    ct_field = getattr(FormSet, "ct_field", None)
+
+                    from django.contrib.contenttypes.models import ContentType
+                    content_type = ContentType.objects.get_for_model(original_obj.__class__)
+
+                    filter_params = {ct_fk_field.name: original_obj.pk, ct_field.name: content_type}
+
                 inlined_objs = inline.model.objects.filter(**filter_params)
                 for n, inlined_obj in enumerate(inlined_objs.all()):
                     for field in inlined_obj._meta.fields:
@@ -133,7 +149,7 @@ class ClonableModelAdmin(ModelAdmin):
                     if isinstance(field, FieldFile) and name not in request.FILES:
                         setattr(new_object, name, field)
 
-                self.save_model(request, new_object, form, False)
+                #self.save_model(request, new_object, form, False)
                 self.save_related(request, form, formsets, False)
                 try:
                     self.log_addition(request, new_object)
@@ -156,11 +172,34 @@ class ClonableModelAdmin(ModelAdmin):
                     prefix = "%s-%s" % (prefix, prefixes[prefix])
                 initial = []
 
+                formset_fk = getattr(FormSet, "fk", None)
+                if formset_fk:
+                    queryset = inline.get_queryset(request).filter(
+                        **{formset_fk.name: original_obj})
+                    for obj in queryset:
+                        initial.append(model_to_dict(obj, exclude=[obj._meta.pk.name,
+                                                                   formset_fk.name]))
+                else:
+                    ct_fk_field = getattr(FormSet, "ct_fk_field", None)
+                    ct_field = getattr(FormSet, "ct_field", None)
+
+                    from django.contrib.contenttypes.models import ContentType
+                    content_type = ContentType.objects.get_for_model(original_obj.__class__)
+
+                    queryset = inline.get_queryset(request).filter(
+                        **{ct_fk_field.name: original_obj.pk, ct_field.name: content_type})
+                    for obj in queryset:
+                        initial.append(model_to_dict(obj, exclude=[obj._meta.pk.name,
+                                                                   ct_fk_field.name,
+                                                                   ct_field.name]))
+
+                '''
                 queryset = inline.get_queryset(request).filter(
-                    **{FormSet.fk.name: original_obj})
+                    **{formset_fk.name: original_obj})
                 for obj in queryset:
                     initial.append(model_to_dict(obj, exclude=[obj._meta.pk.name,
-                                                               FormSet.fk.name]))
+                                                               formset_fk.name]))
+                '''
                 initial = self.tweak_cloned_inline_fields(prefix, initial)
                 formset = FormSet(prefix=prefix, initial=initial)
                 # Since there is no way to customize the `extra` in the constructor,
@@ -184,11 +223,19 @@ class ClonableModelAdmin(ModelAdmin):
 
         inline_admin_formsets = []
         for inline, formset in zip(self.get_inline_instances(request), formsets):
-            fieldsets = list(inline.get_fieldsets(request, original_obj))
+            # fieldsets = list(inline.get_fieldsets(request, original_obj))
+            fieldsets = list([(None, {'fields': formset.form.base_fields.keys()})])
             readonly = list(inline.get_readonly_fields(request, original_obj))
             prepopulated = dict(inline.get_prepopulated_fields(request, original_obj))
             inline_admin_formset = InlineAdminFormSetFakeOriginal(inline, formset,
                 fieldsets, prepopulated, readonly, model_admin=self)
+
+            # Sets values for dynamic custom fields in inlines
+            for i_entry, entry in enumerate(formset.forms):
+                instance_form = formset.forms[i_entry]
+                if instance_form.instance:
+                    instance_form.set_custom_fields(instance_form.instance)
+
             inline_admin_formsets.append(inline_admin_formset)
             media = media + inline_admin_formset.media
 
