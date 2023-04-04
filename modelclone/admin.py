@@ -5,10 +5,10 @@ try:
 except ImportError:
     # django < 1.7
     from django.contrib.admin.util import unquote
-from django.conf.urls import url
-from django.utils.encoding import force_text
-from django.utils.translation import ugettext as _
-from django.utils.translation import ugettext_lazy as lazy
+from django.urls import re_path as url
+from django.utils.encoding import force_str as force_text
+from django.utils.translation import gettext as _
+from django.utils.translation import gettext_lazy as lazy
 from django.utils.html import escape
 from django.forms.models import model_to_dict
 from django.forms.formsets import all_valid
@@ -140,24 +140,28 @@ class ClonableModelAdmin(ModelAdmin):
                                   prefix=prefix)
                 formsets.append(formset)
 
-            if all_valid(formsets) and form_validated:
+            if form_validated:
+                if all_valid(formsets):
 
-                # if original model has any file field, save new model
-                # with same paths to these files
-                for name in vars(original_obj):
-                    field = getattr(original_obj, name)
-                    if isinstance(field, FieldFile) and name not in request.FILES:
-                        setattr(new_object, name, field)
+                    # if original model has any file field, save new model
+                    # with same paths to these files
+                    for name in vars(original_obj):
+                        field = getattr(original_obj, name)
+                        if isinstance(field, FieldFile) and name not in request.FILES:
+                            setattr(new_object, name, field)
 
-                #self.save_model(request, new_object, form, False)
-                self.save_related(request, form, formsets, False)
-                try:
-                    self.log_addition(request, new_object)
-                except TypeError:
-                    # In Django 1.9 we need one more param
-                    self.log_addition(request, new_object, "Cloned object")
+                    #self.save_model(request, new_object, form, False)
+                    self.save_related(request, form, formsets, False)
+                    try:
+                        self.log_addition(request, new_object)
+                    except TypeError:
+                        # In Django 1.9 we need one more param
+                        self.log_addition(request, new_object, "Cloned object")
 
-                return self.response_add(request, new_object, None)
+                    return self.response_add(request, new_object, None)
+
+                else:
+                    new_object.delete()
 
         else:
             initial = model_to_dict(original_obj)
@@ -229,12 +233,6 @@ class ClonableModelAdmin(ModelAdmin):
             prepopulated = dict(inline.get_prepopulated_fields(request, original_obj))
             inline_admin_formset = InlineAdminFormSetFakeOriginal(inline, formset,
                 fieldsets, prepopulated, readonly, model_admin=self)
-
-            # Sets values for dynamic custom fields in inlines
-            for i_entry, entry in enumerate(formset.forms):
-                instance_form = formset.forms[i_entry]
-                if instance_form.instance:
-                    instance_form.set_custom_fields(instance_form.instance)
 
             inline_admin_formsets.append(inline_admin_formset)
             media = media + inline_admin_formset.media
